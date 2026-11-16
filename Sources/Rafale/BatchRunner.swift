@@ -10,6 +10,8 @@ final class BatchRunner {
         var done = 0
         var failed = 0
         var skipped = 0
+        var scripts = 0
+        var scriptsFailed = 0
     }
 
     private struct RootStep {
@@ -17,6 +19,31 @@ final class BatchRunner {
         let payloadID: UUID
         let label: String
         let command: String
+        /// Étape de script : s'exécute seulement si les étapes `requires` ont réussi.
+        var script: ScriptRun?
+        var requires: [Int] = []
+    }
+
+    /// Un script et les installeurs du lot qui le portent : il s'exécute une seule fois pour tous.
+    private final class ScriptRun {
+        let url: URL
+        var items: [QueueItem]
+        var state: ScriptState = .waiting { didSet { items.forEach { $0.scriptState = state } } }
+
+        init(url: URL, items: [QueueItem]) {
+            self.url = url
+            self.items = items
+        }
+
+        func log(_ text: String) { items.forEach { $0.scriptLog += text } }
+
+        /// Tous ses installeurs doivent avoir abouti (ou attendre encore l'étape root).
+        func blocked() -> Bool {
+            guard let culprit = items.first(where: { $0.state != .done && $0.state != .waiting }) else { return false }
+            log(L("« %@ » n'a pas été installé : script non exécuté.", culprit.displayName) + "\n")
+            state = .skipped
+            return true
+        }
     }
 
     private enum CopyResult {
@@ -40,10 +67,20 @@ final class BatchRunner {
         }
     }
 
-    func run(_ items: [QueueItem], manual: [QueueItem], quitRunningApps: Bool, trashSources: Bool) async -> Outcome {
+    func run(_ items: [QueueItem], manual: [QueueItem], quitRunningApps: Bool, trashSources: Bool,
+             rootScripts: Set<String>) async -> Outcome {
         var containers: [UUID: Container] = [:]
         var steps: [RootStep] = []
         items.forEach { $0.state = .waiting; $0.log = "" }
+
+        var runs: [ScriptRun] = []
+        for item in items {
+            item.scriptLog = ""
+            guard let url = item.script else { continue }
+            if let run = runs.first(where: { $0.url == url }) { run.items.append(item) }
+            else { runs.append(ScriptRun(url: url, items: [item])) }
+        }
+        runs.forEach { $0.state = .waiting }
 
         for item in items {
             if stopping { item.state = .skipped; continue }
@@ -95,9 +132,19 @@ final class BatchRunner {
             }
         }
 
+        // Scripts en administrateur : dans le même script root, donc la même demande de mot de passe.
+        for run in runs where rootScripts.contains(run.url.path) && !stopping {
+            if run.blocked() { continue }
+            steps.append(RootStep(item: run.items[0], payloadID: run.items[0].id, label: run.url.lastPathComponent,
+                                  command: PostScript.command(for: run.url, installed: run.items), script: run,
+                                  requires: steps.indices.filter { i in
+                                      steps[i].script == nil && run.items.contains { $0 === steps[i].item }
+                                  }))
+        }
+
         if !steps.isEmpty {
             if stopping {
-                steps.forEach { $0.item.state = .skipped }
+                steps.filter { $0.script == nil }.forEach { $0.item.state = .skipped }
             } else {
                 await runAsRoot(steps)
             }
@@ -106,7 +153,22 @@ final class BatchRunner {
         let all = Array(containers.values)
         await bg { all.forEach { $0.close() } }
 
+        for run in runs where run.state == .waiting && !rootScripts.contains(run.url.path) && !stopping {
+            if run.blocked() { continue }
+            run.state = .running
+            let (status, output) = await runStreaming(PostScript.command(for: run.url, installed: run.items), into: run)
+            run.items.forEach { $0.scriptLog = output }
+            run.state = status == 0 ? .done : .failed(Self.lastLine(output) ?? L("Échec (code %d)", Int(status)))
+        }
+
         var outcome = Outcome()
+        for run in runs {
+            switch run.state {
+            case .done: outcome.scripts += 1
+            case .failed: outcome.scriptsFailed += 1
+            default: run.state = .skipped
+            }
+        }
         for item in items {
             switch item.state {
             case .done:
@@ -127,6 +189,41 @@ final class BatchRunner {
         if !stopping { manual.forEach { NSWorkspace.shared.open($0.url) } }
         try? FileManager.default.removeItem(at: stopFlag)
         return outcome
+    }
+
+    // MARK: Scripts
+
+    nonisolated private static func lastLine(_ text: String) -> String? {
+        text.split(separator: "\n").last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map(String.init)
+    }
+
+    /// Exécute une ligne de shell et recopie sa sortie dans les détails au fil de l'eau.
+    private func runStreaming(_ command: String, into run: ScriptRun) async -> (Int32, String) {
+        await withCheckedContinuation { c in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/sh")
+                p.arguments = ["-c", command]
+                let pipe = Pipe()
+                p.standardOutput = pipe
+                p.standardError = pipe
+                p.standardInput = FileHandle.nullDevice
+                do { try p.run() } catch {
+                    c.resume(returning: (-1, error.localizedDescription + "\n"))
+                    return
+                }
+                var all = ""
+                while true {
+                    let data = pipe.fileHandleForReading.availableData
+                    if data.isEmpty { break }
+                    let text = String(decoding: data, as: UTF8.self)
+                    all += text
+                    DispatchQueue.main.async { run.log(text) }
+                }
+                p.waitUntilExit()
+                c.resume(returning: (p.terminationStatus, all))
+            }
+        }
     }
 
     // MARK: Apps en cours d'exécution
@@ -183,11 +280,13 @@ final class BatchRunner {
 
         var sh = "#!/bin/sh\nLOG=\(shellQuote(log.path))\nSTOP=\(shellQuote(stopFlag.path))\n"
         for (i, step) in steps.enumerated() {
+            let unmet = step.requires.map { " || [ \"$R\($0)\" != 0 ]" }.joined()
             sh += """
-            if [ -e "$STOP" ]; then echo "@@END \(i) 130" >> "$LOG"; else
+            if [ -e "$STOP" ]\(unmet); then echo "@@END \(i) 130" >> "$LOG"; else
             echo "@@BEGIN \(i)" >> "$LOG"
             ( \(step.command) ) >> "$LOG" 2>&1
-            echo "@@END \(i) $?" >> "$LOG"
+            R\(i)=$?
+            echo "@@END \(i) $R\(i)" >> "$LOG"
             fi
 
             """
@@ -201,7 +300,7 @@ final class BatchRunner {
         var remaining: [ObjectIdentifier: Int] = [:]
         var failures: [ObjectIdentifier: String] = [:]
         var skipped = Set<ObjectIdentifier>()
-        steps.forEach { remaining[ObjectIdentifier($0.item), default: 0] += 1 }
+        steps.filter { $0.script == nil }.forEach { remaining[ObjectIdentifier($0.item), default: 0] += 1 }
 
         var finished = false
         var result = ShellResult(status: -1, out: "", err: "")
@@ -230,10 +329,19 @@ final class BatchRunner {
                 if line.hasPrefix("@@BEGIN ") {
                     current = Int(line.dropFirst(8))
                     lastLine = ""
-                    if let i = current { steps[i].item.state = .running(0, steps[i].label) }
+                    if let i = current {
+                        if let run = steps[i].script { run.state = .running }
+                        else { steps[i].item.state = .running(0, steps[i].label) }
+                    }
                 } else if line.hasPrefix("@@END ") {
                     let parts = line.split(separator: " ")
                     guard parts.count == 3, let i = Int(parts[1]), let code = Int(parts[2]) else { continue }
+                    if let run = steps[i].script {
+                        run.state = code == 0 ? .done : code == 130 ? .skipped
+                            : .failed(lastLine.isEmpty ? L("Échec (code %d)", code) : lastLine)
+                        current = nil
+                        continue
+                    }
                     let key = ObjectIdentifier(steps[i].item)
                     if code == 130 {
                         skipped.insert(key)
@@ -247,6 +355,9 @@ final class BatchRunner {
                         else { steps[i].item.state = .done }
                     }
                     current = nil
+                } else if let i = current, let run = steps[i].script {
+                    if !line.isEmpty { lastLine = line }
+                    run.log(line + "\n")
                 } else if let i = current {
                     let item = steps[i].item
                     if line.hasPrefix("installer:%") {
@@ -274,7 +385,7 @@ final class BatchRunner {
 
         // Ce qui n'a jamais reçu de fin : mot de passe refusé ou script interrompu.
         let refused = result.all.contains("-128")
-        for step in steps where (remaining[ObjectIdentifier(step.item)] ?? 0) > 0 {
+        for step in steps where step.script == nil && (remaining[ObjectIdentifier(step.item)] ?? 0) > 0 {
             step.item.state = refused ? .skipped : .failed(
                 result.ok ? L("Interrompu") : result.err.trimmingCharacters(in: .whitespacesAndNewlines))
             if refused { step.item.log += L("Autorisation administrateur refusée.") + "\n" }

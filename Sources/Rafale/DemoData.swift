@@ -2,7 +2,8 @@ import Foundation
 
 /// Jeu de données inventé, pour les captures d'écran du README : lancer l'app avec
 /// `-demoData YES` remplace la file réelle par celle-ci. `-demoStage` choisit l'état montré :
-/// `analyzed` (par défaut), `running`, `done` ou `empty`.
+/// `analyzed` (par défaut), `running`, `done` ou `empty`. `-demoSelect script` sélectionne un
+/// élément qui porte un script de post-installation.
 /// Aucun de ces éditeurs ni de ces fichiers n'existe ; rien n'est lu, installé ni enregistré.
 enum DemoData {
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: "demoData") }
@@ -30,6 +31,20 @@ enum DemoData {
     exit 0
 
     """
+
+    static let postScript = """
+    #!/bin/bash
+    # Runs once Finchley Clipboard is installed: sets it up for this Mac.
+    set -euo pipefail
+
+    echo "Configuring $RAFALE_APP for $RAFALE_USER"
+    defaults write com.finchley.clipboard HistorySize -int 200
+    defaults write com.finchley.clipboard LaunchAtLogin -bool true
+    echo "Done."
+
+    """
+
+    static let rootScripts: Set<String> = [folder + "register-agent.sh"]
 
     private static let folder = "/Users/demo/Downloads/Installers/"
 
@@ -120,12 +135,20 @@ enum DemoData {
                          notes: [L("Contient « %@ », à lancer à la main.", "Install Gadwall Suite.app")])
         suite.payloads = []
 
+        clipboard.script = URL(fileURLWithPath: folder + "setup.sh")
+        clipboard.scriptState = running ? .waiting : done ? .done : .idle
+        clipboard.scriptLog = done ? "Configuring /Applications/Finchley Clipboard.app for demo\nDone.\n" : ""
+        sync.script = URL(fileURLWithPath: folder + "register-agent.sh")
+        sync.scriptState = running ? .waiting : done ? .failed("launchctl: service already loaded") : .idle
+        sync.scriptLog = done ? "Registering the sync agent…\nlaunchctl: service already loaded\n" : ""
+
         let all = [notes, backup, vpn, bridge, clipboard, pipit, marrow, sync, suite]
+        if UserDefaults.standard.string(forKey: "demoSelect") == "script" { return (all, clipboard) }
         return (all, done ? vpn : backup)
     }
 
     static var summary: String? {
         guard stage == "done" else { return nil }
-        return [L("%d installé(s)", 4), L("%d en échec", 1), L("%d à finir à la main", 1)].joined(separator: " · ")
+        return [L("%d installé(s)", 4), L("%d en échec", 1), L("%d script(s) exécuté(s)", 1), L("%d script(s) en échec", 1), L("%d à finir à la main", 1)].joined(separator: " · ")
     }
 }

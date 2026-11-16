@@ -22,6 +22,8 @@
 				<string>com.apple.disk-image</string>
 				<string>public.zip-archive</string>
 				<string>public.folder</string>
+				<string>public.shell-script</string>
+				<string>public.python-script</string>
 			</array>
 		</dict>
 	</array>

@@ -12,6 +12,15 @@ final class AppModel: ObservableObject {
     @Published var running = false
     @Published var summary: String?
     @Published var lists: [SavedList] = []
+    /// Scripts à exécuter avec les droits administrateur, par chemin.
+    @Published var rootScripts: Set<String> = [] {
+        didSet {
+            guard !DemoData.isEnabled else { return }
+            UserDefaults.standard.set(rootScripts.sorted(), forKey: "rootScripts")
+        }
+    }
+    /// Scripts déposés seuls, en attente de l'installeur qu'ils accompagnent.
+    private var pendingScripts: [URL] = []
 
     private var runner: BatchRunner?
     private var watchers: [UUID: AnyCancellable] = [:]
@@ -42,6 +51,7 @@ final class AppModel: ObservableObject {
             }
             if let selected = demo.selected { selection = [selected.id] }
             lists = DemoData.lists
+            rootScripts = DemoData.rootScripts
             running = DemoData.stage == "running"
             summary = DemoData.summary
             return
@@ -53,8 +63,10 @@ final class AppModel: ObservableObject {
         }
         // La file du dernier lancement revient telle quelle.
         let paths = UserDefaults.standard.stringArray(forKey: "session") ?? []
+        rootScripts = Set(UserDefaults.standard.stringArray(forKey: "rootScripts") ?? [])
+        let scripts = UserDefaults.standard.dictionary(forKey: "sessionScripts") as? [String: String] ?? [:]
         restoring = true
-        append(paths.map { URL(fileURLWithPath: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) })
+        append(Self.found(paths, scripts: scripts))
         restoring = false
     }
 
@@ -64,44 +76,84 @@ final class AppModel: ObservableObject {
     func add(_ urls: [URL]) {
         if DemoData.isEnabled { return }
         DispatchQueue.global(qos: .userInitiated).async {
-            let found = Self.expand(urls)
-            DispatchQueue.main.async { self.append(found) }
+            let (found, loose) = Self.expand(urls)
+            DispatchQueue.main.async {
+                self.append(found)
+                self.attach(loose)
+            }
         }
     }
 
-    nonisolated private static func expand(_ urls: [URL]) -> [URL] {
-        var out: [URL] = []
+    /// Un installeur trouvé, avec le script de post-installation repéré à côté de lui.
+    struct Found {
+        var url: URL
+        var script: URL?
+    }
+
+    /// Fichiers d'une session ou d'une liste enregistrée, avec leurs scripts s'ils existent encore.
+    private static func found(_ paths: [String], scripts: [String: String]) -> [Found] {
+        let fm = FileManager.default
+        return paths.filter { fm.fileExists(atPath: $0) }.map { path in
+            Found(url: URL(fileURLWithPath: path),
+                  script: scripts[path].flatMap { fm.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil })
+        }
+    }
+
+    /// Rend les installeurs avec leur script, et les scripts déposés seuls.
+    nonisolated private static func expand(_ urls: [URL]) -> (found: [Found], loose: [URL]) {
+        var out: [Found] = []
+        var loose: [URL] = []
         let fm = FileManager.default
         for url in urls {
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }
-            if SourceKind.of(url) != nil { out.append(url); continue }
-            guard isDir.boolValue, url.pathExtension.lowercased() != "app" else { continue }
+            if SourceKind.of(url) != nil {
+                out.append(Found(url: url, script: PostScript.namesake(of: url)))
+                continue
+            }
+            guard isDir.boolValue else {
+                if PostScript.isScript(url) { loose.append(url) }
+                continue
+            }
+            guard url.pathExtension.lowercased() != "app" else { continue }
+            var installers: [URL] = []
+            var scripts: [String: [URL]] = [:]
             let walker = fm.enumerator(at: url, includingPropertiesForKeys: nil,
                                        options: [.skipsHiddenFiles, .skipsPackageDescendants])
             while let u = walker?.nextObject() as? URL {
                 if SourceKind.of(u) != nil {
-                    out.append(u)
+                    installers.append(u)
                     walker?.skipDescendants()
                 } else if u.pathExtension.lowercased() == "app" {
                     walker?.skipDescendants()
+                } else if PostScript.isScript(u) {
+                    scripts[u.deletingLastPathComponent().path, default: []].append(u)
                 }
             }
+            out += installers.map { Found(url: $0, script: PostScript.pick(for: $0, among: scripts, root: url.path)) }
         }
-        return out
+        return (out, loose)
     }
 
-    private func append(_ urls: [URL]) {
-        let known = Set(items.map { $0.url.standardizedFileURL.path })
-        var seen = known
+    private func append(_ found: [Found]) {
+        var seen = Set(items.map { $0.url.standardizedFileURL.path })
         var fresh: [QueueItem] = []
-        for url in urls {
-            let path = url.standardizedFileURL.path
-            guard !seen.contains(path), let kind = SourceKind.of(url) else { continue }
+        for f in found {
+            let path = f.url.standardizedFileURL.path
+            if seen.contains(path) {
+                // Déjà dans la file : on lui donne seulement le script qu'on vient de lui trouver.
+                if let script = f.script, !running,
+                   let item = (items + fresh).first(where: { $0.url.standardizedFileURL.path == path }),
+                   item.script == nil { item.script = script }
+                continue
+            }
+            guard let kind = SourceKind.of(f.url) else { continue }
             seen.insert(path)
-            fresh.append(QueueItem(url: url, kind: kind))
+            let item = QueueItem(url: f.url, kind: kind)
+            item.script = f.script
+            fresh.append(item)
         }
-        guard !fresh.isEmpty else { return }
+        guard !fresh.isEmpty else { saveSession(); return }
         summary = nil
         for item in fresh {
             // Les compteurs de la barre d'état suivent chaque élément.
@@ -109,6 +161,58 @@ final class AppModel: ObservableObject {
         }
         items.append(contentsOf: fresh)
         fresh.forEach(analyze)
+        attach([])
+    }
+
+    // MARK: Scripts de post-installation
+
+    /// Rattache des scripts déposés seuls : à l'installeur du même dossier qui porte leur nom,
+    /// sinon à tous ceux de ce dossier, sinon aux lignes sélectionnées. Ceux qui ne trouvent
+    /// personne attendent l'arrivée de leur installeur.
+    private func attach(_ dropped: [URL]) {
+        guard !running else { return }
+        for script in pendingScripts + dropped {
+            let dir = script.deletingLastPathComponent().standardizedFileURL.path
+            var targets = items.filter { $0.url.deletingLastPathComponent().standardizedFileURL.path == dir }
+            let namesakes = targets.filter { PostScript.isNamesake(script, of: $0.url) }
+            if !namesakes.isEmpty { targets = namesakes }
+            if targets.isEmpty, dropped.contains(script) { targets = selectedItems }
+            if targets.isEmpty {
+                if !pendingScripts.contains(script) { pendingScripts.append(script) }
+            } else {
+                targets.forEach { $0.script = script }
+                pendingScripts.removeAll { $0 == script }
+            }
+        }
+        if dropped.contains(where: pendingScripts.contains) {
+            summary = L("Script en attente : déposez son installeur, ou sélectionnez une ligne avant de déposer le script.")
+        }
+        saveSession()
+    }
+
+    func chooseScript(for ids: Set<UUID>) {
+        guard !running, !ids.isEmpty else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.prompt = L("Choisir")
+        panel.message = L("Choisissez le script à exécuter une fois l'installation réussie.")
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        for item in items where ids.contains(item.id) { item.script = url }
+        saveSession()
+    }
+
+    func removeScript(for ids: Set<UUID>) {
+        guard !running else { return }
+        for item in items where ids.contains(item.id) { item.script = nil }
+        saveSession()
+    }
+
+    func runsAsRoot(_ script: URL) -> Bool { rootScripts.contains(script.path) }
+
+    func setRoot(_ on: Bool, for script: URL) {
+        if on { rootScripts.insert(script.path) } else { rootScripts.remove(script.path) }
     }
 
     func analyze(_ item: QueueItem) {
@@ -130,10 +234,18 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Réglage : ne plus écarter ni signaler ce que Gatekeeper refuserait.
+    static var ignoreGatekeeper: Bool { UserDefaults.standard.bool(forKey: "ignoreGatekeeper") }
+
+    /// Le réglage vient de changer : les éléments non signés encore en attente suivent.
+    func gatekeeperSettingChanged() {
+        for item in items where item.state == .ready && !item.trust.ok { item.enabled = Self.checkedByDefault(item) }
+    }
+
     /// Coché d'office : ce qui apporte quelque chose et que Gatekeeper accepterait.
     private static func checkedByDefault(_ item: QueueItem) -> Bool {
         if item.isManual { return true }
-        guard item.isInstallable, item.trust.ok else { return false }
+        guard item.isInstallable, item.trust.ok || ignoreGatekeeper else { return false }
         return item.comparison == .new || item.comparison == .update || item.comparison == .unknown
     }
 
@@ -184,6 +296,9 @@ final class AppModel: ObservableObject {
             case "trust": return a.trust.rawValue < b.trust.rawValue
             case "size": return max(a.installSize, a.fileSize) < max(b.installSize, b.fileSize)
             case "state": return a.state.rank < b.state.rank
+            case "script":
+                return (a.script?.lastPathComponent ?? "\u{FFFF}")
+                    .localizedStandardCompare(b.script?.lastPathComponent ?? "\u{FFFF}") == .orderedAscending
             default: return a.displayName.localizedStandardCompare(b.displayName) == .orderedAscending
             }
         }
@@ -217,7 +332,7 @@ final class AppModel: ObservableObject {
         let manual = manualToOpen
 
         let risky = todo.filter { !$0.trust.ok }
-        if !risky.isEmpty {
+        if !risky.isEmpty, !Self.ignoreGatekeeper {
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = L("%d élément(s) ne passeraient pas Gatekeeper", risky.count)
@@ -253,15 +368,18 @@ final class AppModel: ObservableObject {
         summary = nil
         let trash = UserDefaults.standard.bool(forKey: "trashSources")
         Task {
-            let o = await runner.run(todo, manual: manual, quitRunningApps: quitApps, trashSources: trash)
+            let o = await runner.run(todo, manual: manual, quitRunningApps: quitApps, trashSources: trash,
+                                     rootScripts: self.rootScripts)
             self.running = false
             self.runner = nil
             var parts = [L("%d installé(s)", o.done)]
             if o.failed > 0 { parts.append(L("%d en échec", o.failed)) }
+            if o.scripts > 0 { parts.append(L("%d script(s) exécuté(s)", o.scripts)) }
+            if o.scriptsFailed > 0 { parts.append(L("%d script(s) en échec", o.scriptsFailed)) }
             if o.skipped > 0 { parts.append(L("%d non exécuté(s)", o.skipped)) }
             if !manual.isEmpty { parts.append(L("%d à finir à la main", manual.count)) }
             self.summary = parts.joined(separator: " · ")
-            NSSound(named: o.failed > 0 ? "Basso" : "Glass")?.play()
+            NSSound(named: o.failed + o.scriptsFailed > 0 ? "Basso" : "Glass")?.play()
             if trash { self.clearDone() }
         }
     }
@@ -276,8 +394,9 @@ final class AppModel: ObservableObject {
         guard !name.isEmpty, !paths.isEmpty else { return }
         if let i = lists.firstIndex(where: { $0.name == name }) {
             lists[i].paths = paths
+            lists[i].scripts = sessionScripts
         } else {
-            lists.append(SavedList(name: name, paths: paths))
+            lists.append(SavedList(name: name, paths: paths, scripts: sessionScripts))
         }
         persistLists()
     }
@@ -301,7 +420,7 @@ final class AppModel: ObservableObject {
         if DemoData.isEnabled { return }
         let urls = list.paths.map { URL(fileURLWithPath: $0) }
         let missing = urls.filter { !FileManager.default.fileExists(atPath: $0.path) }
-        append(urls.filter { !missing.contains($0) })
+        append(Self.found(list.paths, scripts: list.scripts ?? [:]))
         if !missing.isEmpty {
             let alert = NSAlert()
             alert.messageText = L("%d fichier(s) de la liste sont introuvables", missing.count)
@@ -323,5 +442,12 @@ final class AppModel: ObservableObject {
     private func saveSession() {
         guard !restoring, !DemoData.isEnabled else { return }
         UserDefaults.standard.set(items.map(\.url.path), forKey: "session")
+        UserDefaults.standard.set(sessionScripts, forKey: "sessionScripts")
+    }
+
+    private var sessionScripts: [String: String] {
+        var out: [String: String] = [:]
+        for item in items { if let s = item.script { out[item.url.path] = s.path } }
+        return out
     }
 }

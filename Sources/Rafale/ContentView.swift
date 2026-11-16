@@ -6,6 +6,7 @@ struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
     @AppStorage(Zoom.key) private var zoom = 1.0
     @AppStorage("trashSources") private var trashSources = false
+    @AppStorage("ignoreGatekeeper") private var ignoreGatekeeper = false
     @AppStorage("showInspector") private var showInspector = true
     @State private var dropping = false
 
@@ -136,6 +137,9 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 440 * zoom)
+            Text(L("Un script .sh ou .py rangé à côté d'un installeur est exécuté après son installation."))
+                .font(.system(size: 12 * zoom))
+                .foregroundStyle(.tertiary)
             Button(L("Choisir des fichiers…")) { model.pickFiles() }
                 .controlSize(.large)
                 .font(.system(size: 13 * zoom))
@@ -152,15 +156,19 @@ struct ContentView: View {
                 ProgressView(value: Double(p.done), total: Double(p.total)).frame(width: 140 * zoom)
                 Text(L("%d sur %d", p.done, p.total)).monospacedDigit()
             } else if let summary = model.summary {
-                Text(summary)
+                Text(summary).lineLimit(1).truncationMode(.tail)
             } else {
-                Text(counts)
+                Text(counts).lineLimit(1)
             }
             Spacer()
             if model.items.contains(where: { $0.state == .done }) && !model.running {
                 Button(L("Retirer ce qui est installé")) { model.clearDone() }
                     .buttonStyle(.link)
             }
+            Toggle(L("Ignorer les alertes Gatekeeper"), isOn: $ignoreGatekeeper)
+                .toggleStyle(.checkbox)
+                .help(L("Coche d'office les éléments non signés ou non notarisés et les installe sans demander confirmation."))
+                .onChange(of: ignoreGatekeeper) { model.gatekeeperSettingChanged() }
             Toggle(L("Mettre les fichiers installés à la corbeille"), isOn: $trashSources)
                 .toggleStyle(.checkbox)
         }
@@ -227,7 +235,9 @@ struct InspectorView: View {
 
 struct ItemDetail: View {
     @ObservedObject var item: QueueItem
+    @EnvironmentObject var model: AppModel
     @AppStorage(Zoom.key) private var zoom = 1.0
+    @State private var source: String?
     @State private var scripts: String?
     @State private var loadingScripts = false
 
@@ -276,6 +286,8 @@ struct ItemDetail: View {
                     if let scripts { codeBlock(scripts) }
                 }
 
+                if let url = item.script { scriptDetail(url) }
+
                 if !item.log.isEmpty {
                     Divider()
                     Text(L("Journal")).font(.system(size: 13 * zoom, weight: .semibold))
@@ -285,6 +297,43 @@ struct ItemDetail: View {
             .font(.system(size: 12 * zoom))
             .padding(14 * zoom)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Script de post-installation : ce qu'il est, avec quels droits il tourne, ce qu'il a écrit.
+    @ViewBuilder private func scriptDetail(_ url: URL) -> some View {
+        Divider()
+        Label(L("Script post-install"), systemImage: "terminal").font(.system(size: 13 * zoom, weight: .semibold))
+        row("Fichier", url.path)
+        row("Interpréteur", DemoData.isEnabled ? "/bin/bash" : PostScript.interpreter(for: url).joined(separator: " "))
+        row("Exécution", L("Après toutes les installations, si celle-ci réussit"))
+        Toggle(L("Exécuter en administrateur (root)"),
+               isOn: Binding(get: { model.runsAsRoot(url) }, set: { model.setRoot($0, for: url) }))
+            .toggleStyle(.checkbox)
+            .disabled(model.running)
+        HStack {
+            Button(source == nil ? L("Lire le script") : L("Masquer")) {
+                if source != nil { source = nil }
+                else { source = DemoData.isEnabled ? DemoData.postScript : PostScript.source(of: url) }
+            }
+            Button(L("Retirer")) { model.removeScript(for: [item.id]) }.disabled(model.running)
+        }
+        if let source { codeBlock(source) }
+
+        if item.scriptState != .idle || !item.scriptLog.isEmpty {
+            HStack(spacing: 6 * zoom) {
+                Text(L("Sortie du script")).font(.system(size: 13 * zoom, weight: .semibold))
+                switch item.scriptState {
+                case .waiting: Text(L("En attente")).foregroundStyle(.secondary)
+                case .running: ProgressView().controlSize(.small)
+                case .done: Label(L("Terminé"), systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                case .failed: Label(L("Échec"), systemImage: "xmark.octagon.fill").foregroundStyle(.red)
+                case .skipped: Text(L("Non exécuté")).foregroundStyle(.secondary)
+                case .idle: EmptyView()
+                }
+            }
+            .padding(.top, 4 * zoom)
+            if !item.scriptLog.isEmpty { codeBlock(item.scriptLog) }
         }
     }
 

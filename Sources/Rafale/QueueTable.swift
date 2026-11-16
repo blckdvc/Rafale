@@ -15,6 +15,7 @@ struct QueueTable: NSViewRepresentable {
         ("installed", "Déjà installé", 140, 80),
         ("trust", "Signature", 120, 80),
         ("size", "Taille", 75, 50),
+        ("script", "Script post-install", 150, 80),
         ("state", "État", 200, 100),
     ]
 
@@ -145,12 +146,20 @@ struct QueueTable: NSViewRepresentable {
                 ("Analyser à nouveau", #selector(reanalyze)),
                 ("Retirer de la file", #selector(remove)),
             ]
-            for (title, action) in entries {
+            var all = entries
+            all.insert(("Choisir un script post-install…", #selector(chooseScript)), at: 4)
+            if model.items.contains(where: { target.contains($0.id) && $0.script != nil }) {
+                all.insert(("Retirer le script post-install", #selector(removeScript)), at: 5)
+            }
+            for (title, action) in all {
                 let item = NSMenuItem(title: L(title), action: action, keyEquivalent: "")
                 item.target = self
                 menu.addItem(item)
             }
         }
+
+        @objc private func chooseScript() { model.chooseScript(for: target) }
+        @objc private func removeScript() { model.removeScript(for: target) }
 
         @objc private func reveal() { model.reveal(target) }
         @objc private func check() { model.setEnabled(true, for: target) }
@@ -237,6 +246,8 @@ struct QueueCell: View {
             installed
         case "trust":
             trust
+        case "script":
+            script
         case "size":
             Text(formatBytes(item.installSize > 0 ? item.installSize : item.fileSize))
                 .monospacedDigit().foregroundStyle(.secondary)
@@ -271,6 +282,27 @@ struct QueueCell: View {
         }
     }
 
+    @ViewBuilder private var script: some View {
+        if let url = item.script {
+            HStack(spacing: 5 * zoom) {
+                switch item.scriptState {
+                case .running:
+                    ProgressView().controlSize(.small).scaleEffect(zoom)
+                case .done:
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                case .failed:
+                    Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+                default:
+                    Image(systemName: "terminal").foregroundStyle(.secondary)
+                }
+                Text(url.lastPathComponent)
+            }
+            .help({ if case .failed(let m) = item.scriptState { return m }; return url.path }())
+        } else {
+            Text("—").foregroundStyle(.tertiary)
+        }
+    }
+
     @ViewBuilder private var state: some View {
         switch item.state {
         case .analyzing:
@@ -296,7 +328,11 @@ struct QueueCell: View {
                 Text(phase).foregroundStyle(.secondary)
             }
         case .done:
-            Label(L("Installé"), systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+            if case .failed = item.scriptState {
+                Label(L("Installé, script en échec"), systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            } else {
+                Label(L("Installé"), systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+            }
         case .failed(let message):
             Label(message, systemImage: "xmark.octagon.fill").foregroundStyle(.red).help(message)
         case .skipped:

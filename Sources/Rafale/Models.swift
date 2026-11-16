@@ -90,6 +90,11 @@ enum ItemState: Equatable {
     }
 }
 
+enum ScriptState: Equatable {
+    case idle, waiting, running, done, skipped
+    case failed(String)
+}
+
 final class QueueItem: ObservableObject, Identifiable {
     let id = UUID()
     let url: URL
@@ -107,6 +112,10 @@ final class QueueItem: ObservableObject, Identifiable {
     @Published var notes: [String] = []
     @Published var log = ""
     var hasLicense = false
+    /// Script de post-installation rattaché à cet installeur.
+    @Published var script: URL? { didSet { if script != oldValue { scriptState = .idle; scriptLog = "" } } }
+    @Published var scriptState: ScriptState = .idle
+    @Published var scriptLog = ""
     /// Archive zip déjà extraite pendant l'analyse.
     var workDir: URL?
 
@@ -172,6 +181,8 @@ struct SavedList: Codable, Identifiable, Hashable {
     var id = UUID()
     var name: String
     var paths: [String]
+    /// Script de post-installation de chaque fichier, par chemin.
+    var scripts: [String: String]?
 }
 
 func compareVersions(_ a: String, _ b: String) -> ComparisonResult {

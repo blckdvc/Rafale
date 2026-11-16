@@ -10,6 +10,7 @@ Rafale replaces the ritual of a fresh macOS install: open an image, drag the app
 - **Nothing gets downgraded by accident.** Items that are already installed in the same or a newer version are left unchecked.
 - **Unsigned software is never installed silently.** Anything Gatekeeper would not accept is unchecked by default and needs an explicit confirmation.
 - **Read what a package runs as root.** The pre- and post-install scripts of a `.pkg` are one click away.
+- **Your own post-install scripts ride along.** A `.sh` or `.py` stored next to an installer is picked up on drop and run once the installation succeeds, its output shown live.
 - **Replay the same batch later.** Save the queue as a named list and load it again on the next reinstall.
 - **Native and light.** Swift and SwiftUI, no Electron, no background daemon left on the system.
 
@@ -23,16 +24,16 @@ Free and open-source 🙂 — if you feel like it, buy me a few tokens:
 
 [![Buy me tokens](docs/buy-me-tokens.png)](https://paypal.me/lbenh)
 
-**Contents:** [The queue](#the-queue) · [Analysis](#analysis) · [Installation run](#installation-run) · [Saved lists](#saved-lists) · [Keyboard shortcuts](#keyboard-shortcuts) · [macOS integration](#macos-integration) · [Installing Rafale](#installing-rafale) · [Building](#building) · [Releasing](#releasing) · [Known limits](#known-limits) · [Project layout](#project-layout)
+**Contents:** [The queue](#the-queue) · [Analysis](#analysis) · [Installation run](#installation-run) · [Post-install scripts](#post-install-scripts) · [Saved lists](#saved-lists) · [Keyboard shortcuts](#keyboard-shortcuts) · [macOS integration](#macos-integration) · [Installing Rafale](#installing-rafale) · [Building](#building) · [Releasing](#releasing) · [Known limits](#known-limits) · [Project layout](#project-layout)
 
 ## The queue
 
 - Drop files or whole folders on the window or on the Dock icon, or use **Add** (⌘O). Folders are walked recursively; app bundles and packages are not entered.
-- Each file is one row: name, type (`PKG`, `DMG → App`, `DMG → PKG`, `ZIP → App`…), version, what is already installed, signature, size and status.
+- Each file is one row: name, type (`PKG`, `DMG → App`, `DMG → PKG`, `ZIP → App`…), version, what is already installed, signature, size, status and post-install script.
 - Columns sort on click, can be reordered and resized; their layout is remembered.
 - The checkbox decides whether a row is part of the next run. Space toggles the selection.
 - The details pane shows identifiers, destination, package components, notes and the log of the last run.
-- The queue survives a relaunch.
+- The queue survives a relaunch, with the script attached to each row.
 
 ![Rafale — the empty queue, ready for a drop](docs/screenshot-empty.png)
 
@@ -45,6 +46,7 @@ Free and open-source 🙂 — if you feel like it, buy me a few tokens:
 - **Already installed** — apps are compared with the copy in `/Applications`, packages with their receipts: *not installed yet*, *update*, *same version* or *newer one installed*.
 - **Signature** — *Notarized*, *Signed*, *Not notarized* or *Unsigned*, with the developer name. The verdict is read from Gatekeeper and still holds when assessments are disabled on the Mac.
 - **Interactive installers** — an image that only contains an installer application cannot be automated. It is flagged and opened for you when the run ends.
+- **Ignore Gatekeeper warnings** — off by default. When the box in the status bar is checked, unsigned and non-notarized items are checked like the others and installed without the confirmation; the Signature column still tells what they are. It does not change what macOS itself does when the installed app is first opened.
 
 ![Rafale — the scripts a package would run as root, read before installing](docs/screenshot-scripts.png)
 
@@ -66,9 +68,22 @@ Free and open-source 🙂 — if you feel like it, buy me a few tokens:
 ![Rafale — the end of a batch: four items installed, one failure with its log, one installer left to finish by hand](docs/screenshot-done.png)
 
 
+## Post-install scripts
+
+- **Detected on drop.** When you drop a folder, a script stored next to an installer is attached to it and shown in the **Post-install Script** column. Scripts are recognized by their extension (`.sh`, `.bash`, `.zsh`, `.command`, `.py`) or, without one, by their `#!` line.
+- **Which script goes with which installer.** The script in the installer's own folder, otherwise the one in the nearest parent folder inside what you dropped. With several candidates, the one named after the installer wins (`Tool 2.0.sh` or `Tool 2.0.postinstall.py` for `Tool 2.0.dmg`), then one whose name contains `post`. A script shared by several installers runs once.
+- **An installer dropped alone** only takes a script that bears its name, so unrelated scripts in your Downloads folder are left alone.
+- **By hand.** Right-click a row to choose or remove its script, or select rows and drop a script on the window.
+- **When it runs.** After every installation of the batch, and only if the installers it is attached to succeeded. A failing script does not undo the installation: the row says *Installed, script failed*.
+- **How it runs.** With the interpreter of its `#!` line, otherwise Bash, zsh or `python3` according to its extension; the file does not need to be executable. The working directory is the script's folder. It runs as you, or as root when **Run as administrator** is checked in the details pane — in that case it joins the single administrator prompt of the batch.
+- **What it receives.** `RAFALE_APP` (where the app was installed, for app installers), `RAFALE_SOURCE` (the installer file) and `RAFALE_USER` (your user name, useful as root).
+- **Output.** Standard output and errors appear in the details pane of the installer while the script runs, and stay there afterwards. The script itself can be read there before installing.
+
+![Rafale — a post-install script attached to an installer: its column, its settings and its output in the details pane](docs/screenshot-post-install.png)
+
 ## Saved lists
 
-- **Lists → Save Queue as List…** stores the files of the current queue under a name.
+- **Lists → Save Queue as List…** stores the files of the current queue, and their scripts, under a name.
 - Loading a list adds its files to the queue and reports the ones that are missing.
 - Lists live in `~/Library/Application Support/Rafale/lists.json`.
 
@@ -110,7 +125,7 @@ Requires Xcode command line tools with Swift 5.9 or later.
 ./build.sh
 ```
 
-The app is assembled in `build/Rafale.app`. Launching it with `-demoData YES` shows an invented queue instead of your own, for screenshots; `-demoStage running`, `done` or `empty` picks the state. To sign with your own certificate, write its name in a local `.identite` file or run `IDENTITE="Certificate Name" ./build.sh`; without either, the build is ad hoc signed. The icon is drawn by `tools/make-icns.sh`.
+The app is assembled in `build/Rafale.app`. Launching it with `-demoData YES` shows an invented queue instead of your own, for screenshots; `-demoStage running`, `done` or `empty` picks the state, and `-demoSelect script` selects a row that carries a post-install script. To sign with your own certificate, write its name in a local `.identite` file or run `IDENTITE="Certificate Name" ./build.sh`; without either, the build is ad hoc signed. The icon is drawn by `tools/make-icns.sh`.
 
 ## Releasing
 
@@ -127,6 +142,8 @@ Bumps the version, builds, zips, signs the archive with the Sparkle key from the
 - The administrator prompt is the standard macOS one and is shown under the name `osascript`.
 - A package that requires a restart is installed, but Rafale does not restart the Mac.
 - There is no uninstaller and no download from a URL.
+- Scripts found inside a disk image or an archive are not run; only scripts stored as files next to the installer are.
+- A post-install script that leaves a background process attached to its output keeps its row busy until that process exits.
 - Files cannot be dropped on the menu bar icon; use the window or the Dock icon.
 
 ## Project layout
@@ -134,7 +151,8 @@ Bumps the version, builds, zips, signs the archive with the Sparkle key from the
 | Path | Role |
 |---|---|
 | `Sources/Rafale/Analyzer.swift` | Reads packages, disk images and archives; signature checks |
-| `Sources/Rafale/BatchRunner.swift` | Runs a batch: app copies, single elevated script, progress |
+| `Sources/Rafale/BatchRunner.swift` | Runs a batch: app copies, single elevated script, post-install scripts, progress |
+| `Sources/Rafale/PostScript.swift` | Post-install scripts: detection, pairing with installers, command line |
 | `Sources/Rafale/AppModel.swift` | Queue, saved lists, session |
 | `Sources/Rafale/QueueTable.swift` | Queue table and its cells |
 | `Sources/Rafale/ContentView.swift` | Main window, toolbar, details pane |
