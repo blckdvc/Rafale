@@ -13,6 +13,8 @@ Rafale replaces the ritual of a fresh macOS install: open an image, drag the app
 - **Replay the same batch later.** Save the queue as a named list and load it again on the next reinstall.
 - **Native and light.** Swift and SwiftUI, no Electron, no background daemon left on the system.
 
+![Rafale — a queue of disk images, packages and archives, analyzed before anything is installed](docs/screenshot-main.png)
+
 ### Support the project
 
 Free and open-source 🙂 — if you feel like it, buy me a few tokens:
@@ -38,6 +40,8 @@ Free and open-source 🙂 — if you feel like it, buy me a few tokens:
 - **Already installed** — apps are compared with the copy in `/Applications`, packages with their receipts: *not installed yet*, *update*, *same version* or *newer one installed*.
 - **Signature** — *Notarized*, *Signed*, *Not notarized* or *Unsigned*, with the developer name. The verdict is read from Gatekeeper and still holds when assessments are disabled on the Mac.
 - **Interactive installers** — an image that only contains an installer application cannot be automated. It is flagged and opened for you when the run ends.
+
+![Rafale — the details of an unsigned package, with the script it would run as root](docs/screenshot-scripts.png)
 
 ## Installation run
 
