@@ -32,6 +32,20 @@ final class AppModel: ObservableObject {
     private static let listsFile = supportDir.appendingPathComponent("lists.json")
 
     private init() {
+        // Captures d'écran du README : file inventée, rien n'est lu ni enregistré.
+        if DemoData.isEnabled {
+            let demo = DemoData.queue()
+            restoring = true
+            items = demo.items
+            for item in demo.items {
+                watchers[item.id] = item.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+            }
+            if let selected = demo.selected { selection = [selected.id] }
+            lists = DemoData.lists
+            running = DemoData.stage == "running"
+            summary = DemoData.summary
+            return
+        }
         Scratch.removeStale()
         if let data = try? Data(contentsOf: Self.listsFile),
            let saved = try? JSONDecoder().decode([SavedList].self, from: data) {
@@ -48,6 +62,7 @@ final class AppModel: ObservableObject {
 
     /// Ajoute des fichiers ou des dossiers ; les dossiers sont parcourus en entier.
     func add(_ urls: [URL]) {
+        if DemoData.isEnabled { return }
         DispatchQueue.global(qos: .userInitiated).async {
             let found = Self.expand(urls)
             DispatchQueue.main.async { self.append(found) }
@@ -97,6 +112,7 @@ final class AppModel: ObservableObject {
     }
 
     func analyze(_ item: QueueItem) {
+        if DemoData.isEnabled { return }
         item.state = .analyzing
         item.notes = []
         if let old = item.workDir { try? FileManager.default.removeItem(at: old); item.workDir = nil }
@@ -195,6 +211,7 @@ final class AppModel: ObservableObject {
     // MARK: Installation
 
     func install() {
+        if DemoData.isEnabled { return }
         guard canInstall else { return }
         let todo = toInstall
         let manual = manualToOpen
@@ -249,7 +266,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func stop() { runner?.stop(); objectWillChange.send() }
+    func stop() { if DemoData.isEnabled { return }; runner?.stop(); objectWillChange.send() }
     var stopping: Bool { runner?.stopping ?? false }
 
     // MARK: Listes enregistrées
@@ -281,6 +298,7 @@ final class AppModel: ObservableObject {
     }
 
     func load(_ list: SavedList) {
+        if DemoData.isEnabled { return }
         let urls = list.paths.map { URL(fileURLWithPath: $0) }
         let missing = urls.filter { !FileManager.default.fileExists(atPath: $0.path) }
         append(urls.filter { !missing.contains($0) })
@@ -298,11 +316,12 @@ final class AppModel: ObservableObject {
     }
 
     private func persistLists() {
+        if DemoData.isEnabled { return }
         if let data = try? JSONEncoder().encode(lists) { try? data.write(to: Self.listsFile, options: .atomic) }
     }
 
     private func saveSession() {
-        guard !restoring else { return }
+        guard !restoring, !DemoData.isEnabled else { return }
         UserDefaults.standard.set(items.map(\.url.path), forKey: "session")
     }
 }

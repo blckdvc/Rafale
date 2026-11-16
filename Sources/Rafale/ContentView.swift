@@ -305,6 +305,7 @@ struct ItemDetail: View {
     }
 
     private func loadScripts() {
+        if DemoData.isEnabled { scripts = DemoData.script; return }
         loadingScripts = true
         let targets = item.payloads.filter { $0.kind == .pkg && $0.hasScripts }.map(\.relativePath)
         let item = item

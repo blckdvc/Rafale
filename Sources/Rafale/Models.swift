@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 enum SourceKind: String {
     case pkg, dmg, zip
@@ -93,8 +94,12 @@ final class QueueItem: ObservableObject, Identifiable {
     let id = UUID()
     let url: URL
     let kind: SourceKind
-    let fileSize: Int64
-    lazy var icon: NSImage = NSWorkspace.shared.icon(forFile: url.path)
+    var fileSize: Int64
+    /// Icône du fichier, ou celle de son type quand le fichier n'est pas sur le disque.
+    lazy var icon: NSImage = {
+        if FileManager.default.fileExists(atPath: url.path) { return NSWorkspace.shared.icon(forFile: url.path) }
+        return NSWorkspace.shared.icon(for: UTType(filenameExtension: url.pathExtension) ?? .data)
+    }()
 
     @Published var enabled = false
     @Published var state: ItemState = .analyzing

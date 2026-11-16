@@ -13,7 +13,9 @@ Rafale replaces the ritual of a fresh macOS install: open an image, drag the app
 - **Replay the same batch later.** Save the queue as a named list and load it again on the next reinstall.
 - **Native and light.** Swift and SwiftUI, no Electron, no background daemon left on the system.
 
-![Rafale — a queue of disk images, packages and archives, analyzed before anything is installed](docs/screenshot-main.png)
+![Rafale — a queue of disk images, packages and archives, analyzed before anything is installed, with the details of the selected package](docs/screenshot-main.png)
+
+
 
 ### Support the project
 
@@ -32,6 +34,9 @@ Free and open-source 🙂 — if you feel like it, buy me a few tokens:
 - The details pane shows identifiers, destination, package components, notes and the log of the last run.
 - The queue survives a relaunch.
 
+![Rafale — the empty queue, ready for a drop](docs/screenshot-empty.png)
+
+
 ## Analysis
 
 - **Packages** — identifier, version, installed size and scripts are read from the package table of contents without unpacking the payload. When the package declares an application bundle, its version is shown instead of the package version, which vendors often leave at `1.0`.
@@ -41,7 +46,9 @@ Free and open-source 🙂 — if you feel like it, buy me a few tokens:
 - **Signature** — *Notarized*, *Signed*, *Not notarized* or *Unsigned*, with the developer name. The verdict is read from Gatekeeper and still holds when assessments are disabled on the Mac.
 - **Interactive installers** — an image that only contains an installer application cannot be automated. It is flagged and opened for you when the run ends.
 
-![Rafale — the details of an unsigned package, with the script it would run as root](docs/screenshot-scripts.png)
+![Rafale — the scripts a package would run as root, read before installing](docs/screenshot-scripts.png)
+
+
 
 ## Installation run
 
@@ -51,7 +58,13 @@ Free and open-source 🙂 — if you feel like it, buy me a few tokens:
 - Progress is shown per row, with the phase reported by the macOS installer.
 - A failure does not stop the run; the row keeps the error and can be retried.
 - **Stop** lets the current operation finish and skips the rest.
+
+![Rafale — a batch in progress: one item installed, one being written, the others waiting](docs/screenshot-running.png)
+
 - Optionally, installed files are moved to the Trash when they succeed.
+
+![Rafale — the end of a batch: four items installed, one failure with its log, one installer left to finish by hand](docs/screenshot-done.png)
+
 
 ## Saved lists
 
@@ -78,6 +91,11 @@ Free and open-source 🙂 — if you feel like it, buy me a few tokens:
 - Window size and position, column layout and zoom level (70 % to 200 %) are remembered.
 - Automatic updates through Sparkle.
 
+![Rafale — the same queue in French, following the system language](docs/screenshot-french.png)
+
+![Rafale — the About window](docs/screenshot-about.png)
+
+
 ## Installing Rafale
 
 1. Download the latest `Rafale-x.y.z.zip` from the releases page and move `Rafale.app` to `/Applications`.
@@ -92,7 +110,7 @@ Requires Xcode command line tools with Swift 5.9 or later.
 ./build.sh
 ```
 
-The app is assembled in `build/Rafale.app`. To sign with your own certificate, write its name in a local `.identite` file or run `IDENTITE="Certificate Name" ./build.sh`; without either, the build is ad hoc signed. The icon is drawn by `tools/make-icns.sh`.
+The app is assembled in `build/Rafale.app`. Launching it with `-demoData YES` shows an invented queue instead of your own, for screenshots; `-demoStage running`, `done` or `empty` picks the state. To sign with your own certificate, write its name in a local `.identite` file or run `IDENTITE="Certificate Name" ./build.sh`; without either, the build is ad hoc signed. The icon is drawn by `tools/make-icns.sh`.
 
 ## Releasing
 
@@ -122,6 +140,7 @@ Bumps the version, builds, zips, signs the archive with the Sparkle key from the
 | `Sources/Rafale/ContentView.swift` | Main window, toolbar, details pane |
 | `Sources/Rafale/RafaleApp.swift` | App entry, menus, menu bar item, About window, updater |
 | `Sources/Rafale/Models.swift`, `Support.swift` | Data types, shell and localization helpers |
+| `Sources/Rafale/DemoData.swift` | Invented queue used for screenshots |
 | `Resources/` | `Info.plist`, icons, translations |
 | `tools/` | Icon drawing scripts |
 | `build.sh`, `release.sh` | Build and release |
