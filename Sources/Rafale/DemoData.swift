@@ -38,13 +38,15 @@ enum DemoData {
     set -euo pipefail
 
     echo "Configuring $RAFALE_APP for $RAFALE_USER"
-    defaults write com.finchley.clipboard HistorySize -int 200
+    defaults write com.finchley.clipboard HistorySize -int "$2"
     defaults write com.finchley.clipboard LaunchAtLogin -bool true
     echo "Done."
 
     """
 
-    static let rootScripts: Set<String> = [folder + "register-agent.sh"]
+    static let userScripts: Set<String> = [folder + "setup.sh"]
+    static let scriptArgs = [folder + "setup.sh": "--history 200 --launch-at-login",
+                             folder + "register-agent.sh": "--team studio"]
 
     private static let folder = "/Users/demo/Downloads/Installers/"
 

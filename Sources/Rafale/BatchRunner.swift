@@ -68,7 +68,13 @@ final class BatchRunner {
     }
 
     func run(_ items: [QueueItem], manual: [QueueItem], quitRunningApps: Bool, trashSources: Bool,
-             rootScripts: Set<String>) async -> Outcome {
+             userScripts: Set<String>, scriptArgs: [String: String]) async -> Outcome {
+        func asRoot(_ run: ScriptRun) -> Bool { !userScripts.contains(run.url.path) }
+        func command(_ run: ScriptRun) -> String {
+            PostScript.command(for: run.url, installed: run.items,
+                               arguments: PostScript.words(scriptArgs[run.url.path] ?? ""), root: asRoot(run))
+        }
+
         var containers: [UUID: Container] = [:]
         var steps: [RootStep] = []
         items.forEach { $0.state = .waiting; $0.log = "" }
@@ -133,10 +139,10 @@ final class BatchRunner {
         }
 
         // Scripts en administrateur : dans le même script root, donc la même demande de mot de passe.
-        for run in runs where rootScripts.contains(run.url.path) && !stopping {
+        for run in runs where asRoot(run) && !stopping {
             if run.blocked() { continue }
             steps.append(RootStep(item: run.items[0], payloadID: run.items[0].id, label: run.url.lastPathComponent,
-                                  command: PostScript.command(for: run.url, installed: run.items), script: run,
+                                  command: command(run), script: run,
                                   requires: steps.indices.filter { i in
                                       steps[i].script == nil && run.items.contains { $0 === steps[i].item }
                                   }))
@@ -153,10 +159,10 @@ final class BatchRunner {
         let all = Array(containers.values)
         await bg { all.forEach { $0.close() } }
 
-        for run in runs where run.state == .waiting && !rootScripts.contains(run.url.path) && !stopping {
+        for run in runs where run.state == .waiting && !asRoot(run) && !stopping {
             if run.blocked() { continue }
             run.state = .running
-            let (status, output) = await runStreaming(PostScript.command(for: run.url, installed: run.items), into: run)
+            let (status, output) = await runStreaming(command(run), into: run)
             run.items.forEach { $0.scriptLog = output }
             run.state = status == 0 ? .done : .failed(Self.lastLine(output) ?? L("Échec (code %d)", Int(status)))
         }
@@ -293,7 +299,12 @@ final class BatchRunner {
         }
         try? sh.write(to: script, atomically: true, encoding: .utf8)
 
-        let prompt = L("Rafale installe %d élément(s) qui demandent les droits administrateur.", steps.count)
+        // Le texte de la demande de mot de passe dit ce qui va tourner en root.
+        let scripts = steps.filter { $0.script != nil }.count, installs = steps.count - scripts
+        var what: [String] = []
+        if installs > 0 { what.append(L("installer %d élément(s)", installs)) }
+        if scripts > 0 { what.append(L("exécuter %d script(s) post-install", scripts)) }
+        let prompt = L("Rafale a besoin des droits administrateur pour %@.", what.joined(separator: L(" et ")))
         let source = "do shell script \"/bin/sh \(shellQuote(script.path))\" with prompt \""
             + prompt.replacingOccurrences(of: "\"", with: "'") + "\" with administrator privileges"
 
@@ -389,6 +400,11 @@ final class BatchRunner {
             step.item.state = refused ? .skipped : .failed(
                 result.ok ? L("Interrompu") : result.err.trimmingCharacters(in: .whitespacesAndNewlines))
             if refused { step.item.log += L("Autorisation administrateur refusée.") + "\n" }
+        }
+        for step in steps {
+            guard let run = step.script, run.state == .waiting || run.state == .running else { continue }
+            if refused { run.log(L("Autorisation administrateur refusée.") + "\n") }
+            run.state = refused || result.ok ? .skipped : .failed(L("Interrompu"))
         }
         try? FileManager.default.removeItem(at: dir)
     }

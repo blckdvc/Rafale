@@ -12,11 +12,18 @@ final class AppModel: ObservableObject {
     @Published var running = false
     @Published var summary: String?
     @Published var lists: [SavedList] = []
-    /// Scripts à exécuter avec les droits administrateur, par chemin.
-    @Published var rootScripts: Set<String> = [] {
+    /// Un script tourne en administrateur, sauf ceux-ci (par chemin) qui tournent en utilisateur.
+    @Published var userScripts: Set<String> = [] {
         didSet {
             guard !DemoData.isEnabled else { return }
-            UserDefaults.standard.set(rootScripts.sorted(), forKey: "rootScripts")
+            UserDefaults.standard.set(userScripts.sorted(), forKey: "userScripts")
+        }
+    }
+    /// Arguments passés à chaque script, par chemin.
+    @Published var scriptArgs: [String: String] = [:] {
+        didSet {
+            guard !DemoData.isEnabled else { return }
+            UserDefaults.standard.set(scriptArgs, forKey: "scriptArgs")
         }
     }
     /// Scripts déposés seuls, en attente de l'installeur qu'ils accompagnent.
@@ -51,7 +58,8 @@ final class AppModel: ObservableObject {
             }
             if let selected = demo.selected { selection = [selected.id] }
             lists = DemoData.lists
-            rootScripts = DemoData.rootScripts
+            userScripts = DemoData.userScripts
+            scriptArgs = DemoData.scriptArgs
             running = DemoData.stage == "running"
             summary = DemoData.summary
             return
@@ -63,7 +71,8 @@ final class AppModel: ObservableObject {
         }
         // La file du dernier lancement revient telle quelle.
         let paths = UserDefaults.standard.stringArray(forKey: "session") ?? []
-        rootScripts = Set(UserDefaults.standard.stringArray(forKey: "rootScripts") ?? [])
+        userScripts = Set(UserDefaults.standard.stringArray(forKey: "userScripts") ?? [])
+        scriptArgs = UserDefaults.standard.dictionary(forKey: "scriptArgs") as? [String: String] ?? [:]
         let scripts = UserDefaults.standard.dictionary(forKey: "sessionScripts") as? [String: String] ?? [:]
         restoring = true
         append(Self.found(paths, scripts: scripts))
@@ -209,10 +218,16 @@ final class AppModel: ObservableObject {
         saveSession()
     }
 
-    func runsAsRoot(_ script: URL) -> Bool { rootScripts.contains(script.path) }
+    func runsAsRoot(_ script: URL) -> Bool { !userScripts.contains(script.path) }
 
     func setRoot(_ on: Bool, for script: URL) {
-        if on { rootScripts.insert(script.path) } else { rootScripts.remove(script.path) }
+        if on { userScripts.remove(script.path) } else { userScripts.insert(script.path) }
+    }
+
+    func arguments(for script: URL) -> String { scriptArgs[script.path] ?? "" }
+
+    func setArguments(_ text: String, for script: URL) {
+        scriptArgs[script.path] = text.trimmingCharacters(in: .whitespaces).isEmpty ? nil : text
     }
 
     func analyze(_ item: QueueItem) {
@@ -369,7 +384,7 @@ final class AppModel: ObservableObject {
         let trash = UserDefaults.standard.bool(forKey: "trashSources")
         Task {
             let o = await runner.run(todo, manual: manual, quitRunningApps: quitApps, trashSources: trash,
-                                     rootScripts: self.rootScripts)
+                                     userScripts: self.userScripts, scriptArgs: self.scriptArgs)
             self.running = false
             self.runner = nil
             var parts = [L("%d installé(s)", o.done)]

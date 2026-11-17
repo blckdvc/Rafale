@@ -307,6 +307,14 @@ struct ItemDetail: View {
         row("Fichier", url.path)
         row("Interpréteur", DemoData.isEnabled ? "/bin/bash" : PostScript.interpreter(for: url).joined(separator: " "))
         row("Exécution", L("Après toutes les installations, si celle-ci réussit"))
+        VStack(alignment: .leading, spacing: 2 * zoom) {
+            Text(L("Arguments")).font(.system(size: 10.5 * zoom)).foregroundStyle(.secondary)
+            TextField(L("--option valeur \"avec espaces\""),
+                      text: Binding(get: { model.arguments(for: url) }, set: { model.setArguments($0, for: url) }))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11 * zoom, design: .monospaced))
+                .disabled(model.running)
+        }
         Toggle(L("Exécuter en administrateur (root)"),
                isOn: Binding(get: { model.runsAsRoot(url) }, set: { model.setRoot($0, for: url) }))
             .toggleStyle(.checkbox)

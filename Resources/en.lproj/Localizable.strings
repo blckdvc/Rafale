@@ -100,7 +100,12 @@
 "Pas encore installé" = "Not installed yet";
 "Prêt" = "Ready";
 "Quitter Rafale" = "Quit Rafale";
-"Rafale installe %d élément(s) qui demandent les droits administrateur." = "Rafale is installing %d item(s) that require administrator rights.";
+"Rafale a besoin des droits administrateur pour %@." = "Rafale needs administrator rights to %@.";
+"installer %d élément(s)" = "install %d item(s)";
+"exécuter %d script(s) post-install" = "run %d post-install script(s)";
+" et " = " and ";
+"Arguments" = "Arguments";
+"--option valeur \"avec espaces\"" = "--option value \"with spaces\"";
 "Rechercher les mises à jour…" = "Check for Updates…";
 "Refusé" = "Rejected";
 "Retirer ce qui est installé" = "Remove installed items";

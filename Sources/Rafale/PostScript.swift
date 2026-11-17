@@ -97,17 +97,42 @@ enum PostScript {
     }
 
     /// Ligne de shell qui exécute le script depuis son dossier, avec le contexte du lot.
-    static func command(for script: URL, installed items: [QueueItem]) -> String {
+    /// En root, le script reçoit aussi les variables qu'il aurait sous `sudo`.
+    static func command(for script: URL, installed items: [QueueItem], arguments: [String] = [],
+                        root: Bool = false) -> String {
         var env = ["PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                    "PYTHONUNBUFFERED=1",
                    "RAFALE_USER=" + NSUserName()]
+        if root { env += ["SUDO_USER=" + NSUserName(), "SUDO_UID=\(getuid())", "SUDO_GID=\(getgid())"] }
         if let first = items.first { env.append("RAFALE_SOURCE=" + first.url.path) }
         if let app = items.flatMap(\.payloads).first(where: { $0.kind == .app }) {
             env.append("RAFALE_APP=" + app.destination)
         }
-        let words = ["/usr/bin/env"] + env + interpreter(for: script) + [script.path]
+        let words = ["/usr/bin/env"] + env + interpreter(for: script) + [script.path] + arguments
         return "cd " + shellQuote(script.deletingLastPathComponent().path) + " && "
             + words.map(shellQuote).joined(separator: " ")
+    }
+
+    /// Découpe une ligne d'arguments comme le ferait un shell : espaces, guillemets simples
+    /// ou doubles, barre oblique inverse. Rien n'est développé ($VAR, *, ~ restent tels quels).
+    static func words(_ line: String) -> [String] {
+        var out: [String] = [], current = "", quote: Character?, started = false, escaped = false
+        for ch in line {
+            if escaped { current.append(ch); escaped = false; continue }
+            if ch == "\\", quote != "'" { escaped = true; started = true; continue }
+            if let q = quote {
+                if ch == q { quote = nil } else { current.append(ch) }
+            } else if ch == "'" || ch == "\"" {
+                quote = ch; started = true
+            } else if ch == " " || ch == "\t" {
+                if started || !current.isEmpty { out.append(current) }
+                current = ""; started = false
+            } else {
+                current.append(ch)
+            }
+        }
+        if started || !current.isEmpty { out.append(current) }
+        return out
     }
 
     /// Texte du script, pour le lire avant de l'exécuter.

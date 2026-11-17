@@ -75,7 +75,8 @@ Free and open-source 🙂 — if you feel like it, buy me a few tokens:
 - **An installer dropped alone** only takes a script that bears its name, so unrelated scripts in your Downloads folder are left alone.
 - **By hand.** Right-click a row to choose or remove its script, or select rows and drop a script on the window.
 - **When it runs.** After every installation of the batch, and only if the installers it is attached to succeeded. A failing script does not undo the installation: the row says *Installed, script failed*.
-- **How it runs.** With the interpreter of its `#!` line, otherwise Bash, zsh or `python3` according to its extension; the file does not need to be executable. The working directory is the script's folder. It runs as you, or as root when **Run as administrator** is checked in the details pane — in that case it joins the single administrator prompt of the batch.
+- **How it runs.** With the interpreter of its `#!` line, otherwise Bash, zsh or `python3` according to its extension; the file does not need to be executable. The working directory is the script's folder. It runs as root by default, inside the single administrator prompt of the batch, with `SUDO_USER`, `SUDO_UID` and `SUDO_GID` set as `sudo` would; uncheck **Run as administrator** in the details pane to run it as you, with no prompt.
+- **Arguments.** Type them in the details pane, shell style (`--team studio "two words"`); they are passed as is, nothing is expanded, and they are remembered for that script.
 - **What it receives.** `RAFALE_APP` (where the app was installed, for app installers), `RAFALE_SOURCE` (the installer file) and `RAFALE_USER` (your user name, useful as root).
 - **Output.** Standard output and errors appear in the details pane of the installer while the script runs, and stay there afterwards. The script itself can be read there before installing.
 
@@ -139,7 +140,7 @@ Bumps the version, builds, zips, signs the archive with the Sparkle key from the
 
 - Rafale is not sandboxed and not notarized; it cannot be distributed through the Mac App Store.
 - Interactive installers, encrypted disk images and password-protected archives are not automated.
-- The administrator prompt is the standard macOS one and is shown under the name `osascript`.
+- The administrator prompt is the standard macOS one for scripts: recent versions of macOS name Rafale in it but show their own generic warning rather than the list of what is about to be installed and run, and do not offer Touch ID.
 - A package that requires a restart is installed, but Rafale does not restart the Mac.
 - There is no uninstaller and no download from a URL.
 - Scripts found inside a disk image or an archive are not run; only scripts stored as files next to the installer are.
