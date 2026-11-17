@@ -71,7 +71,13 @@ struct QueueTable: NSViewRepresentable {
     @MainActor final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
         let model: AppModel
         weak var table: NSTableView?
-        private var shown: [UUID] = []
+        /// Lignes affichées : les groupes d'abord (en-tête puis membres), puis le reste.
+        private enum Row: Equatable {
+            case group(URL)
+            case item(UUID, grouped: Bool)
+        }
+        private var rows: [Row] = []
+        private var byID: [UUID: QueueItem] = [:]
         private var zoom = 0.0
         private var syncing = false
         private var fitted = false
@@ -80,9 +86,17 @@ struct QueueTable: NSViewRepresentable {
 
         func sync(zoom: Double) {
             guard let table else { return }
-            let ids = model.items.map(\.id)
-            if ids != shown || zoom != self.zoom {
-                shown = ids
+            var layout: [Row] = []
+            var grouped = Set<UUID>()
+            for g in model.groups {
+                layout.append(.group(g.script))
+                g.items.forEach { grouped.insert($0.id) }
+                if !model.collapsed.contains(g.script.path) { layout += g.items.map { .item($0.id, grouped: true) } }
+            }
+            layout += model.items.filter { !grouped.contains($0.id) }.map { .item($0.id, grouped: false) }
+            byID = Dictionary(uniqueKeysWithValues: model.items.map { ($0.id, $0) })
+            if layout != rows || zoom != self.zoom {
+                rows = layout
                 self.zoom = zoom
                 table.rowHeight = (26 * zoom).rounded()
                 table.reloadData()
@@ -92,31 +106,65 @@ struct QueueTable: NSViewRepresentable {
                 fitted = true
                 DispatchQueue.main.async { table.sizeToFit() }
             }
-            let rows = IndexSet(model.items.indices.filter { model.selection.contains(model.items[$0].id) })
-            if rows != table.selectedRowIndexes {
+            let selected = IndexSet(rows.indices.filter {
+                switch rows[$0] {
+                case .group(let script): return model.selectedGroup == script
+                case .item(let id, _): return model.selection.contains(id)
+                }
+            })
+            if selected != table.selectedRowIndexes {
                 syncing = true
-                table.selectRowIndexes(rows, byExtendingSelection: false)
+                table.selectRowIndexes(selected, byExtendingSelection: false)
                 syncing = false
             }
         }
 
-        func numberOfRows(in tableView: NSTableView) -> Int { model.items.count }
+        func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+
+        /// Éléments visés par une ligne : l'élément lui-même, ou tous ceux du groupe.
+        private func ids(at row: Int) -> Set<UUID> {
+            guard row >= 0, row < rows.count else { return [] }
+            switch rows[row] {
+            case .group(let script): return Set(model.members(of: script).map(\.id))
+            case .item(let id, _): return [id]
+            }
+        }
 
         func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
-            guard let column, row < model.items.count else { return nil }
+            guard let column, row < rows.count else { return nil }
             let cell = tableView.makeView(withIdentifier: column.identifier, owner: nil) as? HostCell ?? {
                 let c = HostCell()
                 c.identifier = column.identifier
                 return c
             }()
-            cell.show(AnyView(QueueCell(item: model.items[row], column: column.identifier.rawValue, zoom: zoom)))
+            switch rows[row] {
+            case .group(let script):
+                cell.show(AnyView(GroupCell(model: model, script: script, column: column.identifier.rawValue, zoom: zoom)))
+            case .item(let id, let grouped):
+                guard let item = byID[id] else { return nil }
+                cell.show(AnyView(QueueCell(item: item, column: column.identifier.rawValue, zoom: zoom, grouped: grouped)))
+            }
             return cell
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !syncing, let table else { return }
-            let ids = Set(table.selectedRowIndexes.compactMap { $0 < model.items.count ? model.items[$0].id : nil })
+            var ids = Set<UUID>(), heads: [URL] = []
+            for i in table.selectedRowIndexes where i < rows.count {
+                switch rows[i] {
+                case .group(let script): heads.append(script)
+                case .item(let id, _): ids.insert(id)
+                }
+            }
+            // Un en-tête seul (ou avec ses propres membres) sélectionne le groupe entier.
+            var group: URL?
+            for script in heads {
+                let members = Set(model.members(of: script).map(\.id))
+                if heads.count == 1, ids.isSubset(of: members) { group = script }
+                ids.formUnion(members)
+            }
             if ids != model.selection { model.selection = ids }
+            if group != model.selectedGroup { model.selectedGroup = group }
         }
 
         func tableView(_ tableView: NSTableView, sortDescriptorsDidChange old: [NSSortDescriptor]) {
@@ -125,15 +173,15 @@ struct QueueTable: NSViewRepresentable {
         }
 
         @objc func doubleClick() {
-            guard let table, table.clickedRow >= 0, table.clickedRow < model.items.count else { return }
-            model.reveal([model.items[table.clickedRow].id])
+            guard let table else { return }
+            model.reveal(ids(at: table.clickedRow))
         }
 
         // Menu contextuel : agit sur la ligne cliquée, ou sur la sélection si elle en fait partie.
         private var target: Set<UUID> {
-            guard let table, table.clickedRow >= 0, table.clickedRow < model.items.count else { return model.selection }
-            let id = model.items[table.clickedRow].id
-            return model.selection.contains(id) ? model.selection : [id]
+            guard let table else { return model.selection }
+            let clicked = ids(at: table.clickedRow)
+            return clicked.isEmpty || clicked.isSubset(of: model.selection) ? model.selection : clicked
         }
 
         func menuNeedsUpdate(_ menu: NSMenu) {
@@ -212,6 +260,8 @@ struct QueueCell: View {
     @ObservedObject var item: QueueItem
     let column: String
     let zoom: Double
+    /// Membre d'un groupe : son script est porté par l'en-tête, pas par sa ligne.
+    var grouped = false
 
     private var font: Font { .system(size: 13 * zoom) }
 
@@ -237,6 +287,7 @@ struct QueueCell: View {
                 Image(nsImage: item.icon).resizable().frame(width: 18 * zoom, height: 18 * zoom)
                 Text(item.displayName)
             }
+            .padding(.leading, grouped ? 20 * zoom : 0)
             .help(item.url.path)
         case "type":
             Text(item.typeLabel).foregroundStyle(.secondary)
@@ -247,7 +298,7 @@ struct QueueCell: View {
         case "trust":
             trust
         case "script":
-            script
+            if !grouped { script }
         case "size":
             Text(formatBytes(item.installSize > 0 ? item.installSize : item.fileSize))
                 .monospacedDigit().foregroundStyle(.secondary)
@@ -328,7 +379,7 @@ struct QueueCell: View {
                 Text(phase).foregroundStyle(.secondary)
             }
         case .done:
-            if case .failed = item.scriptState {
+            if case .failed = item.scriptState, !grouped {
                 Label(L("Installé, script en échec"), systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             } else {
                 Label(L("Installé"), systemImage: "checkmark.circle.fill").foregroundStyle(.green)
@@ -337,6 +388,81 @@ struct QueueCell: View {
             Label(message, systemImage: "xmark.octagon.fill").foregroundStyle(.red).help(message)
         case .skipped:
             Text(L("Non exécuté")).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// En-tête d'un groupe : le dossier, son script partagé et l'état de ce script.
+struct GroupCell: View {
+    @ObservedObject var model: AppModel
+    let script: URL
+    let column: String
+    let zoom: Double
+
+    private var members: [QueueItem] { model.members(of: script) }
+    private var state: ScriptState { members.first?.scriptState ?? .idle }
+    private var collapsed: Bool { model.collapsed.contains(script.path) }
+
+    var body: some View {
+        content
+            .font(.system(size: 13 * zoom))
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: column == "size" ? .trailing : .leading)
+    }
+
+    @ViewBuilder private var content: some View {
+        switch column {
+        case "on":
+            let free = members.filter(\.canToggle)
+            Toggle("", isOn: Binding(get: { (free.isEmpty ? members : free).allSatisfy(\.enabled) },
+                                     set: { model.setEnabled($0, for: Set(members.map(\.id))) }))
+                .labelsHidden()
+                .toggleStyle(.checkbox)
+                .scaleEffect(zoom)
+                .disabled(free.isEmpty)
+        case "name":
+            HStack(spacing: 5 * zoom) {
+                Button { model.toggleCollapsed(script) } label: {
+                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 10 * zoom, weight: .bold))
+                        .frame(width: 14 * zoom, height: 18 * zoom)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                Image(systemName: "folder.fill").foregroundStyle(.secondary)
+                Text(AppModel.groupName(script)).fontWeight(.semibold)
+            }
+            .help(script.deletingLastPathComponent().path)
+        case "type":
+            Text(L("%d installeurs", members.count)).foregroundStyle(.secondary)
+        case "script":
+            HStack(spacing: 5 * zoom) {
+                switch state {
+                case .running: ProgressView().controlSize(.small).scaleEffect(zoom)
+                case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                case .failed: Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+                default: Image(systemName: "terminal").foregroundStyle(.secondary)
+                }
+                Text(script.lastPathComponent).fontWeight(.medium)
+            }
+            .help(script.path)
+        case "size":
+            Text(formatBytes(members.reduce(0) { $0 + ($1.installSize > 0 ? $1.installSize : $1.fileSize) }))
+                .monospacedDigit().foregroundStyle(.secondary)
+        case "state":
+            switch state {
+            case .idle: Text(L("Script à la fin")).foregroundStyle(.secondary)
+            case .waiting: Text(L("Script en attente")).foregroundStyle(.secondary)
+            case .running: Text(L("Script en cours…")).foregroundStyle(.secondary)
+            case .done: Label(L("Script terminé"), systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+            case .failed(let message):
+                Label(L("Script en échec"), systemImage: "xmark.octagon.fill").foregroundStyle(.red).help(message)
+            case .skipped: Text(L("Script non exécuté")).foregroundStyle(.secondary)
+            }
+        default:
+            EmptyView()
         }
     }
 }

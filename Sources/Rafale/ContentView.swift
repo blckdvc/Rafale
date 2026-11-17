@@ -218,7 +218,9 @@ struct InspectorView: View {
 
     var body: some View {
         Group {
-            if let item = model.selectedItems.first, model.selection.count == 1 {
+            if let script = model.selectedGroup, model.members(of: script).count > 1 {
+                GroupDetail(script: script).id(script)
+            } else if let item = model.selectedItems.first, model.selection.count == 1 {
                 ItemDetail(item: item).id(item.id)
             } else {
                 Text(model.selection.isEmpty ? L("Sélectionnez un élément pour voir ses détails")
@@ -237,7 +239,6 @@ struct ItemDetail: View {
     @ObservedObject var item: QueueItem
     @EnvironmentObject var model: AppModel
     @AppStorage(Zoom.key) private var zoom = 1.0
-    @State private var source: String?
     @State private var scripts: String?
     @State private var loadingScripts = false
 
@@ -286,7 +287,20 @@ struct ItemDetail: View {
                     if let scripts { codeBlock(scripts) }
                 }
 
-                if let url = item.script { scriptDetail(url) }
+                if let url = item.script {
+                    Divider()
+                    if model.isGrouped(item) {
+                        // Le script du groupe se règle sur son en-tête, une seule fois pour tous.
+                        Label(L("Script post-install"), systemImage: "terminal")
+                            .font(.system(size: 13 * zoom, weight: .semibold))
+                        Text(L("« %@ » est partagé par %d installeurs : il s'exécute une seule fois, après le dernier.",
+                               url.lastPathComponent, model.members(of: url).count))
+                            .foregroundStyle(.secondary)
+                        Button(L("Voir le groupe")) { model.selectGroup(url) }
+                    } else {
+                        ScriptPanel(script: url, items: [item])
+                    }
+                }
 
                 if !item.log.isEmpty {
                     Divider()
@@ -297,51 +311,6 @@ struct ItemDetail: View {
             .font(.system(size: 12 * zoom))
             .padding(14 * zoom)
             .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    /// Script de post-installation : ce qu'il est, avec quels droits il tourne, ce qu'il a écrit.
-    @ViewBuilder private func scriptDetail(_ url: URL) -> some View {
-        Divider()
-        Label(L("Script post-install"), systemImage: "terminal").font(.system(size: 13 * zoom, weight: .semibold))
-        row("Fichier", url.path)
-        row("Interpréteur", DemoData.isEnabled ? "/bin/bash" : PostScript.interpreter(for: url).joined(separator: " "))
-        row("Exécution", L("Après toutes les installations, si celle-ci réussit"))
-        VStack(alignment: .leading, spacing: 2 * zoom) {
-            Text(L("Arguments")).font(.system(size: 10.5 * zoom)).foregroundStyle(.secondary)
-            TextField(L("--option valeur \"avec espaces\""),
-                      text: Binding(get: { model.arguments(for: url) }, set: { model.setArguments($0, for: url) }))
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11 * zoom, design: .monospaced))
-                .disabled(model.running)
-        }
-        Toggle(L("Exécuter en administrateur (root)"),
-               isOn: Binding(get: { model.runsAsRoot(url) }, set: { model.setRoot($0, for: url) }))
-            .toggleStyle(.checkbox)
-            .disabled(model.running)
-        HStack {
-            Button(source == nil ? L("Lire le script") : L("Masquer")) {
-                if source != nil { source = nil }
-                else { source = DemoData.isEnabled ? DemoData.postScript : PostScript.source(of: url) }
-            }
-            Button(L("Retirer")) { model.removeScript(for: [item.id]) }.disabled(model.running)
-        }
-        if let source { codeBlock(source) }
-
-        if item.scriptState != .idle || !item.scriptLog.isEmpty {
-            HStack(spacing: 6 * zoom) {
-                Text(L("Sortie du script")).font(.system(size: 13 * zoom, weight: .semibold))
-                switch item.scriptState {
-                case .waiting: Text(L("En attente")).foregroundStyle(.secondary)
-                case .running: ProgressView().controlSize(.small)
-                case .done: Label(L("Terminé"), systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                case .failed: Label(L("Échec"), systemImage: "xmark.octagon.fill").foregroundStyle(.red)
-                case .skipped: Text(L("Non exécuté")).foregroundStyle(.secondary)
-                case .idle: EmptyView()
-                }
-            }
-            .padding(.top, 4 * zoom)
-            if !item.scriptLog.isEmpty { codeBlock(item.scriptLog) }
         }
     }
 
@@ -375,6 +344,149 @@ struct ItemDetail: View {
             DispatchQueue.main.async {
                 scripts = text.isEmpty ? L("Scripts illisibles.") : text
                 loadingScripts = false
+            }
+        }
+    }
+}
+
+// MARK: Détails d'un groupe et de son script
+
+/// En-tête de groupe sélectionné : ses installeurs, puis le script qu'ils partagent.
+struct GroupDetail: View {
+    let script: URL
+    @EnvironmentObject var model: AppModel
+    @AppStorage(Zoom.key) private var zoom = 1.0
+
+    var body: some View {
+        let members = model.members(of: script)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10 * zoom) {
+                HStack(spacing: 10 * zoom) {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 30 * zoom)).foregroundStyle(.secondary)
+                        .frame(width: 40 * zoom, height: 40 * zoom)
+                    VStack(alignment: .leading, spacing: 2 * zoom) {
+                        Text(AppModel.groupName(script)).font(.system(size: 15 * zoom, weight: .semibold))
+                        Text(L("Groupe de %d installeurs", members.count)).foregroundStyle(.secondary)
+                    }
+                }
+                Text(L("Ces installeurs partagent un script : il s'exécute une seule fois, après le dernier d'entre eux."))
+                    .foregroundStyle(.secondary)
+                ForEach(members) { MemberRow(item: $0, zoom: zoom) }
+                Divider()
+                ScriptPanel(script: script, items: members)
+            }
+            .font(.system(size: 12 * zoom))
+            .padding(14 * zoom)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct MemberRow: View {
+    @ObservedObject var item: QueueItem
+    let zoom: Double
+
+    var body: some View {
+        HStack(spacing: 6 * zoom) {
+            Image(nsImage: item.icon).resizable().frame(width: 16 * zoom, height: 16 * zoom)
+            Text(item.displayName).lineLimit(1).truncationMode(.middle)
+            Spacer()
+            switch item.state {
+            case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            case .failed: Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+            case .running: ProgressView().controlSize(.small)
+            default: if !item.enabled { Text(L("Laissé de côté")).foregroundStyle(.tertiary) }
+            }
+        }
+    }
+}
+
+/// Script de post-installation : ce qu'il est, avec quels droits il tourne, ce qu'il a écrit.
+struct ScriptPanel: View {
+    let script: URL
+    /// Installeurs qui portent ce script ; le premier donne son état et sa sortie.
+    let items: [QueueItem]
+    @EnvironmentObject var model: AppModel
+    @AppStorage(Zoom.key) private var zoom = 1.0
+    @State private var source: String?
+
+    var body: some View {
+        if let first = items.first { content(first) }
+    }
+
+    @ViewBuilder private func content(_ first: QueueItem) -> some View {
+        Label(L("Script post-install"), systemImage: "terminal").font(.system(size: 13 * zoom, weight: .semibold))
+        row("Fichier", script.path)
+        row("Interpréteur", DemoData.isEnabled ? "/bin/bash" : PostScript.interpreter(for: script).joined(separator: " "))
+        row("Exécution", items.count > 1 ? L("Une seule fois, après toutes les installations, si celles du groupe réussissent")
+                                         : L("Après toutes les installations, si celle-ci réussit"))
+        VStack(alignment: .leading, spacing: 2 * zoom) {
+            Text(L("Arguments")).font(.system(size: 10.5 * zoom)).foregroundStyle(.secondary)
+            TextField(L("--option valeur \"avec espaces\""),
+                      text: Binding(get: { model.arguments(for: script) }, set: { model.setArguments($0, for: script) }))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11 * zoom, design: .monospaced))
+                .disabled(model.running)
+        }
+        Toggle(L("Exécuter en administrateur (root)"),
+               isOn: Binding(get: { model.runsAsRoot(script) }, set: { model.setRoot($0, for: script) }))
+            .toggleStyle(.checkbox)
+            .disabled(model.running)
+        HStack {
+            Button(source == nil ? L("Lire le script") : L("Masquer")) {
+                if source != nil { source = nil }
+                else { source = DemoData.isEnabled ? DemoData.postScript : PostScript.source(of: script) }
+            }
+            Button(L("Retirer")) { model.removeScript(for: Set(items.map(\.id))) }.disabled(model.running)
+        }
+        if let source { codeBlock(source) }
+        ScriptOutput(item: first, zoom: zoom)
+    }
+
+    private func row(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1 * zoom) {
+            Text(L(title)).font(.system(size: 10.5 * zoom)).foregroundStyle(.secondary)
+            Text(value.isEmpty ? "—" : value).textSelection(.enabled)
+        }
+    }
+
+    private func codeBlock(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11 * zoom, design: .monospaced))
+            .textSelection(.enabled)
+            .padding(8 * zoom)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6 * zoom))
+    }
+}
+
+/// État et sortie du script, suivis en direct.
+private struct ScriptOutput: View {
+    @ObservedObject var item: QueueItem
+    let zoom: Double
+
+    var body: some View {
+        if item.scriptState != .idle || !item.scriptLog.isEmpty {
+            HStack(spacing: 6 * zoom) {
+                Text(L("Sortie du script")).font(.system(size: 13 * zoom, weight: .semibold))
+                switch item.scriptState {
+                case .waiting: Text(L("En attente")).foregroundStyle(.secondary)
+                case .running: ProgressView().controlSize(.small)
+                case .done: Label(L("Terminé"), systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                case .failed: Label(L("Échec"), systemImage: "xmark.octagon.fill").foregroundStyle(.red)
+                case .skipped: Text(L("Non exécuté")).foregroundStyle(.secondary)
+                case .idle: EmptyView()
+                }
+            }
+            .padding(.top, 4 * zoom)
+            if !item.scriptLog.isEmpty {
+                Text(item.scriptLog)
+                    .font(.system(size: 11 * zoom, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(8 * zoom)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6 * zoom))
             }
         }
     }

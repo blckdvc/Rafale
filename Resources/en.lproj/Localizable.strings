@@ -155,3 +155,15 @@
 "Un script .sh ou .py rangé à côté d'un installeur est exécuté après son installation." = "A .sh or .py script stored next to an installer runs after it is installed.";
 "Ignorer les alertes Gatekeeper" = "Ignore Gatekeeper warnings";
 "Coche d'office les éléments non signés ou non notarisés et les installe sans demander confirmation." = "Checks unsigned or non-notarized items by default and installs them without asking for confirmation.";
+"%d installeurs" = "%d installers";
+"Script à la fin" = "Script at the end";
+"Script en attente" = "Script waiting";
+"Script en cours…" = "Script running…";
+"Script terminé" = "Script finished";
+"Script en échec" = "Script failed";
+"Script non exécuté" = "Script not run";
+"« %@ » est partagé par %d installeurs : il s'exécute une seule fois, après le dernier." = "“%@” is shared by %d installers: it runs once, after the last one.";
+"Voir le groupe" = "Show the Group";
+"Groupe de %d installeurs" = "Group of %d installers";
+"Ces installeurs partagent un script : il s'exécute une seule fois, après le dernier d'entre eux." = "These installers share one script: it runs once, after the last of them.";
+"Une seule fois, après toutes les installations, si celles du groupe réussissent" = "Once, after every installation, if those of the group succeed";

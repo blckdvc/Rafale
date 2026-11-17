@@ -3,7 +3,7 @@ import Foundation
 /// Jeu de données inventé, pour les captures d'écran du README : lancer l'app avec
 /// `-demoData YES` remplace la file réelle par celle-ci. `-demoStage` choisit l'état montré :
 /// `analyzed` (par défaut), `running`, `done` ou `empty`. `-demoSelect script` sélectionne un
-/// élément qui porte un script de post-installation.
+/// élément qui porte un script de post-installation, `-demoSelect group` l'en-tête d'un groupe.
 /// Aucun de ces éditeurs ni de ces fichiers n'existe ; rien n'est lu, installé ni enregistré.
 enum DemoData {
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: "demoData") }
@@ -46,7 +46,12 @@ enum DemoData {
 
     static let userScripts: Set<String> = [folder + "setup.sh"]
     static let scriptArgs = [folder + "setup.sh": "--history 200 --launch-at-login",
-                             folder + "register-agent.sh": "--team studio"]
+                             groupScript: "--team studio"]
+    private static let groupScript = folder + "Wrenfield/register-agent.sh"
+
+    static var selectedGroup: URL? {
+        UserDefaults.standard.string(forKey: "demoSelect") == "group" && stage != "empty" ? URL(fileURLWithPath: groupScript) : nil
+    }
 
     private static let folder = "/Users/demo/Downloads/Installers/"
 
@@ -99,7 +104,7 @@ enum DemoData {
         guard stage != "empty" else { return ([], nil) }
         let running = stage == "running", done = stage == "done"
 
-        let notes = item("Wrenfield Notes 2.3.dmg", .dmg, mb: 48.2,
+        let notes = item("Wrenfield/Wrenfield Notes 2.3.dmg", .dmg, mb: 48.2,
                          app("Wrenfield Notes", "com.wrenfield.notes", "2.3", mb: 131, team: "Wrenfield Software Ltd (W4R9NF13LD)"),
                          state: running || done ? .done : .ready,
                          log: running || done ? "Copied to /Applications/Wrenfield Notes.app\n" : "")
@@ -128,7 +133,7 @@ enum DemoData {
         let marrow = item("Marrow Tools 0.9.dmg", .dmg, mb: 5.1,
                           app("Marrow Tools", "com.marrow.tools", "0.9", mb: 12, team: "", trust: .unsigned),
                           enabled: false)
-        let sync = item("Wrenfield Sync 1.8.pkg", .pkg, mb: 64.0,
+        let sync = item("Wrenfield/Wrenfield Sync 1.8.pkg", .pkg, mb: 64.0,
                         pkg("Wrenfield Sync", "com.wrenfield.sync", "1.8", mb: 157, team: "Wrenfield Software Ltd (W4R9NF13LD)"),
                         state: running ? .waiting : done ? .done : .ready)
         let suite = item("Gadwall Suite Installer.dmg", .dmg, mb: 9.4,
@@ -140,9 +145,12 @@ enum DemoData {
         clipboard.script = URL(fileURLWithPath: folder + "setup.sh")
         clipboard.scriptState = running ? .waiting : done ? .done : .idle
         clipboard.scriptLog = done ? "Configuring /Applications/Finchley Clipboard.app for demo\nDone.\n" : ""
-        sync.script = URL(fileURLWithPath: folder + "register-agent.sh")
-        sync.scriptState = running ? .waiting : done ? .failed("launchctl: service already loaded") : .idle
-        sync.scriptLog = done ? "Registering the sync agent…\nlaunchctl: service already loaded\n" : ""
+        // Un groupe : les deux installeurs du dossier Wrenfield partagent un script.
+        for member in [notes, sync] {
+            member.script = URL(fileURLWithPath: groupScript)
+            member.scriptState = running ? .waiting : done ? .failed("launchctl: service already loaded") : .idle
+            member.scriptLog = done ? "Registering the sync agent…\nlaunchctl: service already loaded\n" : ""
+        }
 
         let all = [notes, backup, vpn, bridge, clipboard, pipit, marrow, sync, suite]
         if UserDefaults.standard.string(forKey: "demoSelect") == "script" { return (all, clipboard) }

@@ -71,7 +71,8 @@ Free and open-source 🙂 — if you feel like it, buy me a few tokens:
 ## Post-install scripts
 
 - **Detected on drop.** When you drop a folder, a script stored next to an installer is attached to it and shown in the **Post-install Script** column. Scripts are recognized by their extension (`.sh`, `.bash`, `.zsh`, `.command`, `.py`) or, without one, by their `#!` line.
-- **Which script goes with which installer.** The script in the installer's own folder, otherwise the one in the nearest parent folder inside what you dropped. With several candidates, the one named after the installer wins (`Tool 2.0.sh` or `Tool 2.0.postinstall.py` for `Tool 2.0.dmg`), then one whose name contains `post`. A script shared by several installers runs once.
+- **Which script goes with which installer.** The script in the installer's own folder, otherwise the one in the nearest parent folder inside what you dropped. With several candidates, the one named after the installer wins (`Tool 2.0.sh` or `Tool 2.0.postinstall.py` for `Tool 2.0.dmg`), then one whose name contains `post`. A script shared by several installers makes them a group.
+- **Groups.** Installers that share a script are gathered under one header row: the folder, the script, how many installers. The script runs once for the group, after its last installer. The header's checkbox checks the whole group, its arrow folds it, and selecting it shows the script, its arguments and its output in the details pane, in one place. Sorting keeps groups together, ahead of the installers that have none.
 - **An installer dropped alone** only takes a script that bears its name, so unrelated scripts in your Downloads folder are left alone.
 - **By hand.** Right-click a row to choose or remove its script, or select rows and drop a script on the window.
 - **When it runs.** After every installation of the batch, and only if the installers it is attached to succeeded. A failing script does not undo the installation: the row says *Installed, script failed*.
@@ -80,7 +81,7 @@ Free and open-source 🙂 — if you feel like it, buy me a few tokens:
 - **What it receives.** `RAFALE_APP` (where the app was installed, for app installers), `RAFALE_SOURCE` (the installer file) and `RAFALE_USER` (your user name, useful as root).
 - **Output.** Standard output and errors appear in the details pane of the installer while the script runs, and stay there afterwards. The script itself can be read there before installing.
 
-![Rafale — a post-install script attached to an installer: its column, its settings and its output in the details pane](docs/screenshot-post-install.png)
+![Rafale — two installers grouped under the script they share: the group header, and the script's settings and output in the details pane](docs/screenshot-post-install.png)
 
 ## Saved lists
 
@@ -126,7 +127,7 @@ Requires Xcode command line tools with Swift 5.9 or later.
 ./build.sh
 ```
 
-The app is assembled in `build/Rafale.app`. Launching it with `-demoData YES` shows an invented queue instead of your own, for screenshots; `-demoStage running`, `done` or `empty` picks the state, and `-demoSelect script` selects a row that carries a post-install script. To sign with your own certificate, write its name in a local `.identite` file or run `IDENTITE="Certificate Name" ./build.sh`; without either, the build is ad hoc signed. The icon is drawn by `tools/make-icns.sh`.
+The app is assembled in `build/Rafale.app`. Launching it with `-demoData YES` shows an invented queue instead of your own, for screenshots; `-demoStage running`, `done` or `empty` picks the state, and `-demoSelect script` selects a row that carries a post-install script, `-demoSelect group` the header of a group. To sign with your own certificate, write its name in a local `.identite` file or run `IDENTITE="Certificate Name" ./build.sh`; without either, the build is ad hoc signed. The icon is drawn by `tools/make-icns.sh`.
 
 ## Releasing
 

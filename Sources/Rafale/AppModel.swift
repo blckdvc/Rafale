@@ -9,6 +9,10 @@ final class AppModel: ObservableObject {
 
     @Published var items: [QueueItem] = [] { didSet { saveSession() } }
     @Published var selection = Set<UUID>()
+    /// Groupe dont l'en-tête est sélectionné : son script s'affiche dans les détails.
+    @Published var selectedGroup: URL?
+    /// Groupes repliés, par chemin de script.
+    @Published var collapsed = Set<String>()
     @Published var running = false
     @Published var summary: String?
     @Published var lists: [SavedList] = []
@@ -57,6 +61,10 @@ final class AppModel: ObservableObject {
                 watchers[item.id] = item.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
             }
             if let selected = demo.selected { selection = [selected.id] }
+            if let script = DemoData.selectedGroup {
+                selectedGroup = script
+                selection = Set(demo.items.filter { $0.script == script }.map(\.id))
+            }
             lists = DemoData.lists
             userScripts = DemoData.userScripts
             scriptArgs = DemoData.scriptArgs
@@ -215,6 +223,7 @@ final class AppModel: ObservableObject {
     func removeScript(for ids: Set<UUID>) {
         guard !running else { return }
         for item in items where ids.contains(item.id) { item.script = nil }
+        refreshGroupSelection()
         saveSession()
     }
 
@@ -272,6 +281,48 @@ final class AppModel: ObservableObject {
         }
         items.removeAll { ids.contains($0.id) }
         selection.subtract(ids)
+        refreshGroupSelection()
+    }
+
+    // MARK: Groupes
+
+    /// Un script porté par plusieurs installeurs forme un groupe : il s'exécute une seule
+    /// fois, après le dernier d'entre eux. Dans l'ordre où ils apparaissent dans la file.
+    var groups: [(script: URL, items: [QueueItem])] {
+        var order: [URL] = [], members: [URL: [QueueItem]] = [:]
+        for item in items {
+            guard let script = item.script else { continue }
+            if members[script] == nil { order.append(script) }
+            members[script, default: []].append(item)
+        }
+        return order.compactMap { script in
+            guard let list = members[script], list.count > 1 else { return nil }
+            return (script, list)
+        }
+    }
+
+    func members(of script: URL) -> [QueueItem] { items.filter { $0.script == script } }
+
+    func isGrouped(_ item: QueueItem) -> Bool {
+        guard let script = item.script else { return false }
+        return items.contains { $0 !== item && $0.script == script }
+    }
+
+    /// Nom affiché d'un groupe : le dossier où se trouve son script.
+    static func groupName(_ script: URL) -> String { script.deletingLastPathComponent().lastPathComponent }
+
+    func selectGroup(_ script: URL) {
+        selection = Set(members(of: script).map(\.id))
+        selectedGroup = script
+    }
+
+    func toggleCollapsed(_ script: URL) {
+        if collapsed.contains(script.path) { collapsed.remove(script.path) } else { collapsed.insert(script.path) }
+    }
+
+    /// Un groupe qui n'a plus au moins deux installeurs n'est plus un groupe.
+    private func refreshGroupSelection() {
+        if let g = selectedGroup, members(of: g).count < 2 { selectedGroup = nil }
     }
 
     func clear() { remove(Set(items.map(\.id))) }
